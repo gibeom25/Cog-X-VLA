@@ -1,0 +1,12 @@
+# Generated/regenerated data (reproducible via data/regenerate_libero_frames.py)
+data/regenerated/
+
+# Claude Code session state (not project content)
+**/.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+logs/
