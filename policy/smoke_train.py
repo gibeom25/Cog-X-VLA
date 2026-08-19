@@ -27,11 +27,11 @@ sys.path.insert(0, "/home/gibeom_pilab/cog-xvla/policy")
 sys.path.insert(0, "/home/gibeom_pilab/cog-xvla/data")
 
 import torch
-from PIL import Image
 
 from xvla_adapter import XVLAWithPerception
 from models.processing_xvla import XVLAProcessor
 from prepare_libero import load_demo, build_training_windows
+from dataset import build_sample_from_window
 
 MODEL_PATH = "2toINF/X-VLA-Libero"
 REGEN_ROOT = "/home/gibeom_pilab/cog-xvla/data/regenerated"
@@ -49,6 +49,10 @@ def freeze_for_finetune(model: XVLAWithPerception):
 
 
 def build_sample(hdf5_path: str, demo_key: str, t: int, processor: XVLAProcessor, device):
+    """Convenience single-sample loader for scripts that only need one
+    sample (e.g. visualize_input.py) -- not the fast path, still reloads
+    the whole demo per call. Real training uses dataset.LiberoDataset,
+    which loads each demo once instead of once per sample."""
     demo = load_demo(hdf5_path, demo_key)
     windows = build_training_windows(demo, num_actions=30)
     w = windows[t]
@@ -58,36 +62,8 @@ def build_sample(hdf5_path: str, demo_key: str, t: int, processor: XVLAProcessor
         per_frame_objects = json.load(f)
     objects = per_frame_objects[t]
 
-    lang = processor.encode_language(demo.instruction)
-    input_ids = lang["input_ids"].to(device)
-
-    wrist_img = Image.fromarray(w["robot0_eye_in_hand_rgb"])
-    img_enc = processor.encode_image([wrist_img])
-    image_input = img_enc["image_input"].to(device).to(torch.float32)
-    image_mask = img_enc["image_mask"].to(device)
-
-    if objects:
-        labels = [o["label"] for o in objects]
-        label_ids = processor.tokenizer(labels, return_tensors="pt", padding=True)["input_ids"]
-        label_ids = label_ids.unsqueeze(0).to(device)  # [1, N, L]
-        object_raw = torch.tensor(
-            [o["relative_xyz"] + o["half_extents"] for o in objects], dtype=torch.float32
-        ).unsqueeze(0).to(device)  # [1, N, 6]
-    else:
-        label_ids = torch.zeros(1, 0, 1, dtype=torch.long, device=device)
-        object_raw = torch.zeros(1, 0, 6, device=device)
-
-    lang_mask = (input_ids != processor.tokenizer.pad_token_id)
-
-    proprio = torch.tensor(w["proprio20"], dtype=torch.float32, device=device).unsqueeze(0)
-    action = torch.tensor(w["action20"], dtype=torch.float32, device=device).unsqueeze(0)
-    domain_id = torch.tensor([3], device=device)
-
-    return dict(
-        input_ids=input_ids, image_input=image_input, image_mask=image_mask,
-        domain_id=domain_id, proprio=proprio, action=action,
-        object_raw=object_raw, object_label_ids=label_ids, lang_mask=lang_mask,
-    ), len(objects)
+    sample = build_sample_from_window(demo.instruction, w, objects, processor, device)
+    return sample, len(objects)
 
 
 def main():
