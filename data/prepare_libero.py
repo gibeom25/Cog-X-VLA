@@ -11,7 +11,9 @@ proprio construction (that file is the only concrete evidence of X-VLA's
 expected action layout available in this repo -- there's no access to
 X-VLA's own original training data pipeline to confirm it against).
 
-Run in the `libero_plus` conda env (needs robosuite's transform_utils).
+No robosuite dependency (Rodrigues' formula reimplemented locally, same
+approach as data/cache_object_detections.py) so this also runs in the
+XVLA conda env, which doesn't have robosuite installed.
 """
 
 from __future__ import annotations
@@ -22,16 +24,26 @@ from typing import List
 
 import h5py
 import numpy as np
-import robosuite.utils.transform_utils as T
+
+
+def _axisangle_to_rotmat(aa: np.ndarray) -> np.ndarray:
+    """axis-angle -> 3x3 rotation matrix (Rodrigues' formula)."""
+    theta = np.linalg.norm(aa)
+    if theta < 1e-8:
+        return np.eye(3)
+    axis = aa / theta
+    K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+    return np.eye(3) + np.sin(theta) * K + (1 - np.cos(theta)) * (K @ K)
 
 
 def axisangle_to_rotate6d(aa: np.ndarray) -> np.ndarray:
     """[T,3] or [3] axis-angle -> [T,6] or [6] 6D rotation (Zhou et al.),
-    matching evaluation/libero/libero_client.py's AxisAngle_to_Rotate6D."""
+    matching evaluation/libero/libero_client.py's AxisAngle_to_Rotate6D
+    (rotation matrix's first two columns)."""
     single = aa.ndim == 1
     if single:
         aa = aa[None]
-    mats = np.stack([T.quat2mat(T.axisangle2quat(a)) for a in aa])  # [T,3,3]
+    mats = np.stack([_axisangle_to_rotmat(a) for a in aa])  # [T,3,3]
     r6d = np.concatenate([mats[:, :3, 0], mats[:, :3, 1]], axis=-1)  # [T,6]
     return r6d[0] if single else r6d
 
