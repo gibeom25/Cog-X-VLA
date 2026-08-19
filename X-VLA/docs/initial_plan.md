@@ -18,8 +18,9 @@ LIBERO-plus(10,030 태스크, 7개 perturbation 차원) 벤치마크에서 X-VLA
 | Object 토큰 최종 개수 | 고정 K (예: K=8) | `transformer.py`의 `pos_emb`가 고정 인덱스 파라미터라 가변 길이 세그먼트를 넣을 수 없음 → Set-invariant encoder가 반드시 고정 K개 출력을 내야 함 |
 | Policy 주입 방식 | `vlm_proj`/`aux_visual_proj`와 병렬인 **3번째 concat 스트림** (`object_proj`) | 대안(= aux_visual_inputs에 합산)은 K가 aux patch 개수와 강제로 같아져야 해서 고정-K 설계 목적을 무너뜨림 |
 | Object 토큰용 위치 임베딩 | `pos_emb`의 미사용 tail을 재사용하지 **않고**, `soft_prompt_hub`와 동일한 패턴의 전용 `nn.Parameter(K, hidden_size)` 신설 | tail 재사용은 의미 없는 위치 bias를 주고, 시퀀스 길이가 늘어나면 인덱스 충돌 위험 |
-| 학습 시 object 토큰 계산 방식 | **오프라인 캐시** (episode·frame 키로 1회 계산 후 디스크 저장) | SAM3 zero-shot·frozen이라 매 epoch 재계산할 이유 없음. 단, 캐시 경계는 **Perception(블록 1~5) 출력까지만** — Fusion(블록 6~10)은 학습 가능한 모듈이므로 매 forward마다 라이브로 실행 (안 그러면 soft threshold 등에 gradient가 안 흐름) |
+| 학습 시 object 토큰 계산 방식 | **오프라인 캐시** (episode·frame 키로 1회 계산 후 디스크 저장) | SAM3 zero-shot·frozen이라 매 epoch 재계산할 이유 없음. 단, 캐시 경계는 **Perception(블록 1~5) 출력까지만** — Fusion(블록 6~8, 10)은 학습 가능한 모듈이므로 매 forward마다 라이브로 실행 |
 | Depth 소스 | 학습: HDF5 `states` replay로 재생성 / 추론: `OffScreenRenderEnv(camera_depths=True)` 실시간 | 원본 LIBERO HDF5, X-VLA 재가공 HDF5, `lerobot/libero` 어디에도 depth 없음 (직접 확인) |
+| 언어-무관 물체의 처리 | **제거하지 않고 가중치만 다르게** (블록9 Threshold+제거 폐기, 2026-08-19 변경) | 정책 입력이 이미지가 아니라 상대좌표뿐이라, 언어와 무관한 물체를 완전히 제거해버리면 그게 경로를 막는 장애물이어도 정책이 인식할 방법이 없음 (예: "white cup을 yellow bowl에 놓아라"인데 blue cup이 경로 중간에 있는 경우). 블록7(관련도 계산)+블록8(FiLM 가중치)은 유지하되, 블록9는 파이프라인에서 제거 — 물체 인지(장애물 회피용)와 물체 관련도(과업 수행용)를 분리 |
 
 ---
 
@@ -52,9 +53,9 @@ Phase 1 출력 스키마 확정 후 시작. 블록 간 순서는 엄격히 순�
 |---|---|---|---|
 | 6 | Projection/Adapter | `fusion/projection.py` | object 토큰(3D pos + mask 특징) → 공통 embedding dim |
 | 7 | Cross-Attention | `fusion/cross_attention.py` | 언어 토큰(§0 결정: frozen embedding) × #6 출력 → 관련도 score |
-| 8 | FiLM | `fusion/film.py` | #7 score → scale/shift 생성 → object embedding에 적용 |
-| 9 | Threshold 필터링 | `fusion/threshold.py` | 학습: soft (Gumbel-Softmax/differentiable top-k) / 추론: hard cutoff |
-| 10 | Set-invariant encoder | `fusion/set_encoder.py` | 가변 개수 필터링 결과 → 고정 K개 pooled 토큰 (attention readout) |
+| 8 | FiLM | `fusion/film.py` | #7 score → scale/shift 생성 → object embedding에 적용 (관련도 높은 물체를 증폭하되, 낮은 물체도 제거하지 않고 남김) |
+| ~~9~~ | ~~Threshold 필터링~~ | ~~`fusion/threshold.py`~~ | **폐기 (2026-08-19)** — 물체 제거는 안 함, §0 "언어-무관 물체의 처리" 참고 |
+| 10 | Set-invariant encoder | `fusion/set_encoder.py` | **가변 개수 전체(필터링 없음)** → 고정 K개 pooled 토큰 (attention readout) |
 
 ---
 
@@ -74,7 +75,7 @@ Phase 1 출력 스키마 확정 후 시작. 블록 간 순서는 엄격히 순�
 |---|---|
 | Florence2 (`self.vlm`) | Frozen (전체) |
 | `self.transformer.blocks`(24층) | 대부분 frozen, 1일 프로토타입은 앞/뒤 2~4개 층만 학습 |
-| 신규 모듈(블록 6~11: projection/cross-attn/FiLM/threshold/set-encoder/object_proj) | Full train |
+| 신규 모듈(블록 6,7,8,10,11: projection/cross-attn/FiLM/set-encoder/object_proj) | Full train |
 | `action_encoder`/`action_decoder` | Fine-tune (기존과 동일) |
 | Backbone 전체 LoRA | 본 실험(1단계) 단계에서만 검토 |
 
@@ -119,7 +120,7 @@ Phase 1 출력 스키마 확정 후 시작. 블록 간 순서는 엄격히 순�
         │
 [Phase 1: 1→2→3→4b→4→5]  (Perception, 순차적 — 각 블록이 이전 블록 출력에 의존)
         │
-[Phase 2: 6→7→8→9→10]     (Fusion, Phase 1과 병렬 착수 가능 — synthetic tensor로 독립 개발)
+[Phase 2: 6→7→8→10]       (Fusion, Phase 1과 병렬 착수 가능 — synthetic tensor로 독립 개발; 블록9 폐기)
         │
 [Phase 3: 11 (xvla_adapter.py)]   ← Phase 1 + Phase 2 산출물이 합쳐지는 지점
         │
@@ -147,9 +148,8 @@ project/
 ├── fusion/
 │   ├── projection.py          # [블록6] object 토큰 → 공통 embedding dim
 │   ├── cross_attention.py     # [블록7] 언어(frozen embedding) × object 토큰
-│   ├── film.py                # [블록8] score → scale/shift
-│   ├── threshold.py           # [블록9] soft(train)/hard(eval) 필터링
-│   └── set_encoder.py         # [블록10] 가변개수 → 고정 K 토큰
+│   ├── film.py                # [블록8] score → scale/shift (제거 없이 가중치만)
+│   └── set_encoder.py         # [블록10] 가변개수(필터링 없는 전체) → 고정 K 토큰
 ├── policy/
 │   └── xvla_adapter.py        # [블록11] XVLA/SoftPromptedTransformer subclass
 │                               #   - object_proj 추가 (transformer.py:319-324 패턴)
@@ -180,7 +180,7 @@ project/
 ## 검증 방법 (블록별 "완료" 기준)
 
 - **블록 1~5 (Perception)**: LIBERO 렌더링 이미지 5~10장에 대해 mask/3D좌표/상대좌표를 시각화해 육안 검증 (문서 §6 주의사항과 동일)
-- **블록 6~10 (Fusion)**: synthetic 텐서(랜덤 object 개수 3~15개)로 forward pass가 shape 에러 없이 통과하고, threshold 필터링 후에도 gradient가 흐르는지(`loss.backward()` 후 각 파라미터 `.grad`가 None이 아닌지) 확인
+- **블록 6~8, 10 (Fusion)**: synthetic 텐서(랜덤 object 개수 0~15개)로 forward pass가 shape 에러 없이 통과하고, 모든 입력·파라미터에 gradient가 흐르는지(`loss.backward()` 후 각 파라미터 `.grad`가 None이 아닌지) 확인. 블록9는 폐기되어 검증 대상에서 제외 — §0 "언어-무관 물체의 처리" 참고
 - **블록 11 (xvla_adapter)**: 1배치 forward, `pred_action` shape이 원본 X-VLA와 동일한지, 원본 대비 추가 파라미터 수 확인
 - **블록 12 (Depth 재생성)**: 재생성 RGB[i] vs 저장된 원본 RGB[i] pixel-diff 스팟체크 (프레임 정합성 확인 필수)
 - **블록 14 (학습 스모크테스트)**: 수십~백 샘플, 수십 step, loss NaN 없이 감소
