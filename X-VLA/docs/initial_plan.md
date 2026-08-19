@@ -21,6 +21,7 @@ LIBERO-plus(10,030 태스크, 7개 perturbation 차원) 벤치마크에서 X-VLA
 | 학습 시 object 토큰 계산 방식 | **오프라인 캐시** (episode·frame 키로 1회 계산 후 디스크 저장) | SAM3 zero-shot·frozen이라 매 epoch 재계산할 이유 없음. 단, 캐시 경계는 **Perception(블록 1~5) 출력까지만** — Fusion(블록 6~8, 10)은 학습 가능한 모듈이므로 매 forward마다 라이브로 실행 |
 | Depth 소스 | 학습: HDF5 `states` replay로 재생성 / 추론: `OffScreenRenderEnv(camera_depths=True)` 실시간 | 원본 LIBERO HDF5, X-VLA 재가공 HDF5, `lerobot/libero` 어디에도 depth 없음 (직접 확인) |
 | 언어-무관 물체의 처리 | **제거하지 않고 가중치만 다르게** (블록9 Threshold+제거 폐기, 2026-08-19 변경) | 정책 입력이 이미지가 아니라 상대좌표뿐이라, 언어와 무관한 물체를 완전히 제거해버리면 그게 경로를 막는 장애물이어도 정책이 인식할 방법이 없음 (예: "white cup을 yellow bowl에 놓아라"인데 blue cup이 경로 중간에 있는 경우). 블록7(관련도 계산)+블록8(FiLM 가중치)은 유지하되, 블록9는 파이프라인에서 제거 — 물체 인지(장애물 회피용)와 물체 관련도(과업 수행용)를 분리 |
+| 물체 크기 표현 (2026-08-19 추가) | **3축 반너비 스칼라 3개** (PCA, 방향 벡터 없이 크기만) — 점 하나(구체 근사)로는 회피 시 "얼마나 피해야 하나"를 모름. 전체 boundary/contour는 (a) 한 카메라 시점의 부분 실루엣일 뿐이고 (b) 물체마다 개수가 달라 고정 크기 토큰에 안 맞고 (c) 계산·정보 복잡도만 늘어남 → 기각 | 파지 방향까지는 이 크기 정보 + 블록6의 의미 라벨 임베딩("bowl"이 이미 형태 prior를 내포) + X-VLA의 사전학습된 foundation 지식에 맡김. 별도 grasp-pose 추정 모듈은 만들지 않음 — 원래 계획서에도 없던 범위이며, 평가(§5.3 실패 분류에 "파지/접촉 실패" 범주 추가 예정)로 실제 필요성이 확인되면 그때 추가 |
 
 ---
 
@@ -33,7 +34,7 @@ LIBERO-plus(10,030 태스크, 7개 perturbation 차원) 벤치마크에서 X-VLA
 | 1 | NP(명사구) 추출 | `perception/np_extractor.py` | 명령어 문자열 → 명사구 리스트 | 없음 (기존 파서/LLM 재사용, 신규 학습 없음) | 샘플 명령어 10개 육안 확인 |
 | 2 | SAM3 wrapper | `perception/sam3_wrapper.py` | RGB + 명사구 리스트 → per-object mask/bbox/conf | #1, **SAM3 설치 필요(미설치 확인됨)** | LIBERO 렌더링 이미지에 대한 mask 품질 육안 확인 (문서 §6 주의사항) |
 | 3 | 물체 클러스터링 | `perception/clustering.py` | mask들 → 대표 pixel 좌표 | #2 | distractor 밀도 높은 프레임에서 grounding 정확도 사전 점검 |
-| 4 | Depth→3D localization | `perception/depth_localize.py` | 대표 pixel + depth + camera intrinsic/extrinsic → 3D 좌표(world frame) | #3, depth 소스 (아래 4b) | `robosuite.utils.camera_utils.project_points_from_world_to_camera`로 왕복 투영 오차 확인 |
+| 4 | Depth→3D localization + 크기 추정 | `perception/depth_localize.py` | 대표 pixel + depth + camera intrinsic/extrinsic → 3D 좌표(world frame); mask 전체 pixel → point cloud → PCA 3축 반너비(`estimate_object_extent`) | #3, depth 소스 (아래 4b) | 왕복 투영 오차 확인 + bowl(지름~10cm,높이~5cm)/plate(지름~13cm,두께~1.8cm) 등 실측 대비 형태 타당성 확인 완료 |
 | 4b | **[선행 필요]** Depth 재생성 (학습용) | `data/regenerate_depth.py` | 원본 LIBERO demo HDF5의 `states` → replay → depth map | 없음 (블록 12와 동일 스크립트, 순서상 여기 먼저 실행) | 아래 "Depth 재생성 검증" 참고 |
 | 5 | EEF 상대좌표 변환 | `perception/relative_pose.py` | 3D 좌표 + 현재 EEF pose → egocentric 상대좌표 (매 타임스텝 갱신) | #4 | 정적 물체가 EEF 이동에 따라 상대좌표만 바뀌는지 시뮬레이션 확인 |
 

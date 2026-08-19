@@ -46,7 +46,7 @@ if __name__ == "__main__":
     from perception.np_extractor import extract_object_phrases
     from perception.sam3_wrapper import Sam3Wrapper
     from perception.clustering import representative_pixels
-    from perception.depth_localize import pixel_to_world, flipped_to_native_pixel
+    from perception.depth_localize import pixel_to_world, flipped_to_native_pixel, estimate_object_extent
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--in_dir", required=True, help="output dir from data/render_test_frame.py")
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     wrapper = Sam3Wrapper()
     detections = wrapper.segment_all(image, candidates)
 
-    results = []  # (label, world_xyz, relative_xyz)
+    results = []  # (label, world_xyz, relative_xyz, half_extents)
     for cands, det in zip(candidates, detections):
         if det is None:
             print(f"{cands[0]!r}: no detection")
@@ -84,21 +84,28 @@ if __name__ == "__main__":
                 y_native, x_native = flipped_to_native_pixel(p.y, p.x, H, W)
                 world_xyz = pixel_to_world(y_native, x_native, d, K, R)
                 rel_xyz = world_to_eef_relative(world_xyz, eef_pos, eef_rot)
+                half_extents = estimate_object_extent(mask, depth, K, R)
                 label = cands[0] if len(det.masks) == 1 else f"{cands[0]}#{i}"
-                results.append((label, world_xyz, rel_xyz))
+                results.append((label, world_xyz, rel_xyz, half_extents))
                 dist = np.linalg.norm(rel_xyz)
                 print(f"{label}: world={np.round(world_xyz, 3)} "
-                      f"eef_relative={np.round(rel_xyz, 3)} dist={dist:.3f}m")
+                      f"eef_relative={np.round(rel_xyz, 3)} dist={dist:.3f}m "
+                      f"half_extents(m)={np.round(half_extents, 3)}")
 
     # ---- Visualization: top-down (bird's-eye, world XY) + egocentric (EEF-relative XY) ----
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 
+    # marker area scaled to the object's largest half-extent, so relative
+    # object sizes are visible at a glance (e.g. plate vs bowl footprint)
+    def marker_size(half_extents):
+        return max(float(half_extents[:2].max()) * 6000, 40)
+
     ax = axes[0]
     ax.scatter([eef_pos[0]], [eef_pos[1]], c="red", marker="*", s=200, label="EEF (world)", zorder=5)
-    for label, world_xyz, _ in results:
-        ax.scatter([world_xyz[0]], [world_xyz[1]], s=80)
+    for label, world_xyz, _, half_extents in results:
+        ax.scatter([world_xyz[0]], [world_xyz[1]], s=marker_size(half_extents), alpha=0.7)
         ax.annotate(label, (world_xyz[0], world_xyz[1]), fontsize=8, xytext=(4, 4), textcoords="offset points")
-    ax.set_title("World frame (bird's-eye XY)")
+    ax.set_title("World frame (bird's-eye XY)\nmarker size ~ object footprint")
     ax.set_xlabel("world X (m)")
     ax.set_ylabel("world Y (m)")
     ax.axis("equal")
@@ -107,8 +114,8 @@ if __name__ == "__main__":
 
     ax = axes[1]
     ax.scatter([0], [0], c="red", marker="*", s=200, label="EEF (origin)", zorder=5)
-    for label, _, rel_xyz in results:
-        ax.scatter([rel_xyz[0]], [rel_xyz[1]], s=80)
+    for label, _, rel_xyz, half_extents in results:
+        ax.scatter([rel_xyz[0]], [rel_xyz[1]], s=marker_size(half_extents), alpha=0.7)
         ax.annotate(label, (rel_xyz[0], rel_xyz[1]), fontsize=8, xytext=(4, 4), textcoords="offset points")
     ax.set_title("EEF-relative frame (egocentric XY)")
     ax.set_xlabel("relative X (m)")

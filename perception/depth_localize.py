@@ -61,6 +61,58 @@ def pixel_to_world(y: int, x: int, depth_value: float, K: np.ndarray, cam_to_wor
     return p_world[:3]
 
 
+def estimate_object_extent(mask: np.ndarray, depth: np.ndarray, K: np.ndarray, cam_to_world: np.ndarray,
+                            subsample: int = 4) -> np.ndarray:
+    """
+    Object size estimate for obstacle clearance / rough grasp-affordance,
+    without needing a full boundary/contour representation (see project
+    notes: a single point+radius sphere has no notion of "how big", but a
+    full 3D contour is viewpoint-partial, variable-size, and adds more
+    complexity than it's worth at this stage -- this is the agreed middle
+    ground). Unprojects every (subsampled) mask pixel to a 3D point using
+    the same geometry as pixel_to_world, then returns the object's extent
+    along its 3 principal axes via PCA, sorted largest to smallest.
+
+    Deliberately drops orientation (which world/relative direction each
+    axis points in) and keeps only the 3 magnitudes -- e.g. "this object
+    has one long axis and two short ones" (a bottle) vs "roughly equal on
+    all axes" (a ball) -- letting the policy's own pretrained shape/grasp
+    priors (triggered by the semantic label embedding, block 6) do the
+    rest, rather than hand-engineering a grasp direction.
+
+    Args:
+        mask: [H, W] bool, in the same flipped-image space as SAM3 output.
+        depth: [H, W] real depth (meters), flipped to match mask.
+        K, cam_to_world: as in pixel_to_world.
+        subsample: use every Nth mask pixel (mask interiors are highly
+            redundant for a PCA extent estimate; full density isn't needed).
+
+    Returns:
+        [3] half-extents (meters) along the object's 3 principal axes,
+        sorted descending (major, mid, minor).
+    """
+    H, W = mask.shape
+    ys, xs = np.nonzero(mask)
+    ys, xs = ys[::subsample], xs[::subsample]
+    if len(ys) < 3:
+        return np.zeros(3)
+
+    points = np.stack([
+        pixel_to_world(*flipped_to_native_pixel(int(y), int(x), H, W), float(depth[y, x]), K, cam_to_world)
+        for y, x in zip(ys, xs)
+    ])  # [M, 3]
+
+    centroid = points.mean(axis=0)
+    centered = points - centroid
+    cov = (centered.T @ centered) / len(centered)
+    eigvals, eigvecs = np.linalg.eigh(cov)  # ascending order
+    axes = eigvecs[:, ::-1]  # descending eigenvalue order
+
+    projections = centered @ axes  # [M, 3]
+    half_extents = (projections.max(axis=0) - projections.min(axis=0)) / 2.0
+    return half_extents  # already descending, since axes are sorted by eigenvalue
+
+
 def world_to_pixel(world_xyz: np.ndarray, K: np.ndarray, cam_to_world: np.ndarray):
     """Inverse of pixel_to_world, for round-trip validation. Mirrors
     robosuite.utils.camera_utils.project_points_from_world_to_camera exactly
@@ -106,5 +158,7 @@ if __name__ == "__main__":
                 world_xyz = pixel_to_world(y_native, x_native, d, K, R)
                 reproj_y, reproj_x = world_to_pixel(world_xyz, K, R)
                 err = ((reproj_y - y_native) ** 2 + (reproj_x - x_native) ** 2) ** 0.5
+                half_extents = estimate_object_extent(mask, depth, K, R)
                 print(f"{cands[0]!r} inst{i}: flipped_px=({p.y},{p.x}) native_px=({y_native},{x_native}) "
-                      f"depth={d:.3f}m -> world={np.round(world_xyz, 3)} err={err:.2f}px")
+                      f"depth={d:.3f}m -> world={np.round(world_xyz, 3)} err={err:.2f}px "
+                      f"half_extents(m)={np.round(half_extents, 3)}")
