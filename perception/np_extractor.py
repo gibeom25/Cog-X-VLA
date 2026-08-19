@@ -13,6 +13,7 @@ No training involved -- this wraps spaCy's noun-chunk parser.
 
 from __future__ import annotations
 
+import re
 from typing import List
 
 import spacy
@@ -26,6 +27,15 @@ _STOP_HEADS = {"it", "them", "this", "that", "there"}
 # Leading tokens to strip from a noun chunk before treating it as an
 # object reference (determiners, possessives).
 _STRIP_LEADING_POS = {"DET", "PRON"}
+
+# LIBERO-plus auto-derives `task.language` from the bddl/task filename for
+# perturbation variants outside the "Language Instructions" category, which
+# leaves a trailing tag like "... place it on the plate table 1" -- "table 1"
+# is a background/table-variant id, not part of the sentence. Left in, spaCy
+# chunks it into a bogus "plate table" noun phrase that SAM3 then matches to
+# arbitrary background locations (confirmed empirically: 3 spurious
+# detections scattered across the scene, nowhere near an actual object).
+_TRAILING_VARIANT_TAG = re.compile(r"\s+table\s+\d+\s*$", re.IGNORECASE)
 
 
 def _get_nlp():
@@ -56,6 +66,8 @@ def extract_object_phrases(instruction: str) -> List[List[str]]:
         Candidates are ordered most-specific -> most-generic; a downstream
         SAM3 wrapper should try them in order and stop at the first hit.
     """
+    instruction = _TRAILING_VARIANT_TAG.sub("", instruction).strip()
+
     nlp = _get_nlp()
     doc = nlp(instruction)
 
@@ -89,6 +101,7 @@ if __name__ == "__main__":
         "open the middle drawer of the cabinet",
         "turn on the stove and put the moka pot on it",
         "pick up the alphabet soup and place it in the basket",
+        "pick up the black bowl between the plate and the ramekin and place it on the plate table 1",
     ]
     for ex in examples:
         print(ex)
