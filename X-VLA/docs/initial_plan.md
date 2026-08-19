@@ -22,6 +22,7 @@ LIBERO-plus(10,030 태스크, 7개 perturbation 차원) 벤치마크에서 X-VLA
 | Depth 소스 | 학습: HDF5 `states` replay로 재생성 / 추론: `OffScreenRenderEnv(camera_depths=True)` 실시간 | 원본 LIBERO HDF5, X-VLA 재가공 HDF5, `lerobot/libero` 어디에도 depth 없음 (직접 확인) |
 | 언어-무관 물체의 처리 | **제거하지 않고 가중치만 다르게** (블록9 Threshold+제거 폐기, 2026-08-19 변경) | 정책 입력이 이미지가 아니라 상대좌표뿐이라, 언어와 무관한 물체를 완전히 제거해버리면 그게 경로를 막는 장애물이어도 정책이 인식할 방법이 없음 (예: "white cup을 yellow bowl에 놓아라"인데 blue cup이 경로 중간에 있는 경우). 블록7(관련도 계산)+블록8(FiLM 가중치)은 유지하되, 블록9는 파이프라인에서 제거 — 물체 인지(장애물 회피용)와 물체 관련도(과업 수행용)를 분리 |
 | 물체 크기 표현 (2026-08-19 추가) | **3축 반너비 스칼라 3개** (PCA, 방향 벡터 없이 크기만) — 점 하나(구체 근사)로는 회피 시 "얼마나 피해야 하나"를 모름. 전체 boundary/contour는 (a) 한 카메라 시점의 부분 실루엣일 뿐이고 (b) 물체마다 개수가 달라 고정 크기 토큰에 안 맞고 (c) 계산·정보 복잡도만 늘어남 → 기각 | 파지 방향까지는 이 크기 정보 + 블록6의 의미 라벨 임베딩("bowl"이 이미 형태 prior를 내포) + X-VLA의 사전학습된 foundation 지식에 맡김. 별도 grasp-pose 추정 모듈은 만들지 않음 — 원래 계획서에도 없던 범위이며, 평가(§5.3 실패 분류에 "파지/접촉 실패" 범주 추가 예정)로 실제 필요성이 확인되면 그때 추가 |
+| 카메라 입력 구성 (2026-08-19 추가) | **wrist(eye-in-hand) 이미지는 원본 그대로 유지, agentview(전역 씬)만 object-centric 토큰으로 대체** | LIBERO-plus의 Camera Viewpoint perturbation은 그리퍼에 고정된 wrist cam이 아니라 agentview(외부 씬 카메라)에만 적용되는 개념이고, Background/Light perturbation도 wrist cam은 화면 대부분이 그리퍼+근접 물체라 영향이 작음 → agentview만 perturbation에 취약하므로 그것만 교체. 부가 효과로 블록1~5(좌표+크기)가 놓치는 "파지 접촉 시점의 미세 시각 피드백"을 wrist cam이 그대로 보완. **구현 위치**: `models/modeling_xvla.py`의 `forward_vlm()`은 무수정 — `image_input`에 wrist cam 하나만 넣으면 `image_features[:, 0]`이 자동으로 텍스트 융합 역할을 하고 `aux_visual_inputs`는 자연히 비므로, 이건 모델이 아니라 Phase 4(데이터 준비)/Phase 6(eval client) 쪽에서 결정할 사항 |
 
 ---
 
